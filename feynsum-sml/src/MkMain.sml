@@ -1,9 +1,11 @@
 functor MkMain
   (structure C: COMPLEX
    structure B: BASIS_IDX
+   val disableFusion: bool
+   val maxBranchingStride: int
    val blockSize: int
    val maxload: real
-   val gateScheduler: GateScheduler.t
+   val gateScheduler: string
    val doMeasureZeros: bool
    val denseThreshold: real
    val pullThreshold: real) =
@@ -13,13 +15,26 @@ struct
 
   structure G = Gate (structure B = B structure C = C)
 
+  structure SSTLocked = SparseStateTableLockedSlots (structure B = B structure C = C)
+  structure SSTLockFree = SparseStateTable (structure B = B structure C = C)
+  structure DS = DenseState (structure B = B structure C = C)
+  structure HSLocked = HybridState (structure B = B
+                                    structure C = C
+                                    structure SST = SSTLocked
+                                    structure DS = DS)
+  structure HSLockFree = HybridState (structure B = B
+                                      structure C = C
+                                      structure SST = SSTLockFree
+                                      structure DS = DS)
+
   structure BFSLocked =
     FullSimBFS
       (structure B = B
        structure C = C
-       structure SST =
-         SparseStateTableLockedSlots (structure B = B structure C = C)
+       structure HS = HSLocked
        structure G = G
+       val disableFusion = disableFusion
+       val maxBranchingStride = maxBranchingStride
        val blockSize = blockSize
        val maxload = maxload
        val gateScheduler = gateScheduler
@@ -31,8 +46,10 @@ struct
     FullSimBFS
       (structure B = B
        structure C = C
-       structure SST = SparseStateTable (structure B = B structure C = C)
+       structure HS = HSLockFree
        structure G = G
+       val disableFusion = disableFusion
+       val maxBranchingStride = maxBranchingStride
        val blockSize = blockSize
        val maxload = maxload
        val gateScheduler = gateScheduler
@@ -50,23 +67,23 @@ struct
 
   fun main (inputName, circuit) =
     let
-      val numQubits = Circuit.numQubits circuit
+      val numQubits = #numQubits circuit
       val impl = CLA.parseString "impl" "lockfree"
       val output = CLA.parseString "output" ""
       val outputDensities = CLA.parseString "output-densities" ""
 
       val _ = print ("impl " ^ impl ^ "\n")
 
-      val sim =
+      fun sim () =
         case impl of
-          "lockfree" => BFSLockfree.run
-        | "locked" => BFSLocked.run
+          "lockfree" => BFSLockfree.run circuit
+        | "locked" => BFSLocked.run circuit
         | _ =>
             Util.die
               ("unknown impl " ^ impl
                ^ "; valid options are: locked, lockfree\n")
 
-      val {result, counts} = Benchmark.run "full-sim-bfs" (fn _ => sim circuit)
+      val {result, counts} = Benchmark.run "full-sim-bfs" (fn _ => sim ())
       val counts = Seq.map IntInf.fromInt counts
 
       val maxNumStates = IntInf.pow (2, numQubits)
@@ -146,8 +163,8 @@ struct
       print
         (String.concatWith ","
            [ name
-           , Int.toString (Circuit.numQubits circuit)
-           , Int.toString (Circuit.numGates circuit)
+           , Int.toString (#numQubits circuit)
+           , Int.toString (Seq.length (#gates circuit))
            , Real.fmt (StringCvt.FIX (SOME 12)) (Rat.approx maxDensity)
            , Real.fmt (StringCvt.FIX (SOME 12)) (Rat.approx avgDensity)
            ] ^ "\n")

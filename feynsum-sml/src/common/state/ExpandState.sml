@@ -1,33 +1,30 @@
 functor ExpandState
   (structure B: BASIS_IDX
    structure C: COMPLEX
-   structure SST: SPARSE_STATE_TABLE
-   structure DS: DENSE_STATE
+   structure HS: HYBRID_STATE
    structure G: GATE
-   sharing B = SST.B = DS.B = G.B
-   sharing C = SST.C = DS.C = G.C
+   sharing B = HS.B = G.B
+   sharing C = HS.C = G.C
    val blockSize: int
    val maxload: real
    val denseThreshold: real
    val pullThreshold: real) :>
 sig
 
-  datatype state =
-    Sparse of SST.t
-  | Dense of DS.t
-  | DenseKnownNonZeroSize of DS.t * int
-
   val expand:
     { gates: G.t Seq.t
     , numQubits: int
     , maxNumStates: IntInf.int
-    , state: state
+    , state: HS.state
     , prevNonZeroSize: int
     }
-    -> {result: state, method: string, numNonZeros: int, numGateApps: int}
+    -> {result: HS.state, method: string, numNonZeros: int, numGateApps: int}
 
 end =
 struct
+
+  structure SST = HS.SST
+  structure DS = HS.DS
 
   (* 0 < r < 1
    *
@@ -55,7 +52,7 @@ struct
               val d = Char.ord (String.sub (digits, depth)) - Char.ord #"0"
               val _ =
                 if 0 <= d andalso d <= 9 then ()
-                else raise Fail "riMult: bad digit"
+                else raise Fail ("riMult: bad digit " ^ digits ^ ", " ^ Real.toString r ^ ", " ^ IntInf.toString i)
               val acc =
                 acc + (i * IntInf.fromInt d) div (IntInf.pow (10, depth + 1))
             in
@@ -108,13 +105,6 @@ struct
     AllSucceeded
   | SomeFailed of {widx: B.t * C.t, gatenum: int} list
 
-
-  datatype state =
-    Sparse of SST.t
-  | Dense of DS.t
-  | DenseKnownNonZeroSize of DS.t * int
-
-
   fun expandSparse {gates: G.t Seq.t, numQubits, state, expected} =
     let
       val numGates = Seq.length gates
@@ -122,9 +112,9 @@ struct
 
       val stateSeq =
         case state of
-          Sparse sst => DelayedSeq.map SOME (SST.compact sst)
-        | Dense state => DS.unsafeViewContents state
-        | DenseKnownNonZeroSize (state, _) => DS.unsafeViewContents state
+          HS.Sparse sst => DelayedSeq.map SOME (SST.compact sst)
+        | HS.Dense state => DS.unsafeViewContents state
+        | HS.DenseKnownNonZeroSize (state, _) => DS.unsafeViewContents state
 
       (* number of initial elements *)
       val n = DelayedSeq.length stateSeq
@@ -205,7 +195,7 @@ struct
                   case apply widx of
                     G.OutputOne widx' => doGates (apps + 1) (widx', gatenum + 1)
                   | G.OutputTwo (widx1, widx) =>
-                      doTwo (apps + 1) ((widx1, widx), gatenum + 1)
+                      doTwo (apps + 2) ((widx1, widx), gatenum + 1)
 
           and doTwo apps ((widx1, widx2), gatenum) =
             case doGates apps (widx1, gatenum) of
@@ -285,7 +275,7 @@ struct
 
       val (apps, output) = loop 0 initialBlocks initialTable
     in
-      {result = Sparse output, numGateApps = apps}
+      {result = HS.Sparse output, numGateApps = apps}
     end
 
 
@@ -296,9 +286,9 @@ struct
 
       val stateSeq =
         case state of
-          Sparse sst => DelayedSeq.map SOME (SST.compact sst)
-        | Dense state => DS.unsafeViewContents state
-        | DenseKnownNonZeroSize (state, _) => DS.unsafeViewContents state
+          HS.Sparse sst => DelayedSeq.map SOME (SST.compact sst)
+        | HS.Dense state => DS.unsafeViewContents state
+        | HS.DenseKnownNonZeroSize (state, _) => DS.unsafeViewContents state
 
       (* number of initial elements *)
       val n = DelayedSeq.length stateSeq
@@ -331,7 +321,7 @@ struct
           SOME widx => doGates 0 (widx, 0)
         | NONE => 0)
     in
-      {result = Dense output, numGateApps = numGateApps}
+      {result = HS.Dense output, numGateApps = numGateApps}
     end
 
 
@@ -343,9 +333,9 @@ struct
 
       val lookup =
         case state of
-          Sparse sst => (fn bidx => Option.getOpt (SST.lookup sst bidx, C.zero))
-        | Dense ds => DS.lookupDirect ds
-        | DenseKnownNonZeroSize (ds, _) => DS.lookupDirect ds
+          HS.Sparse sst => (fn bidx => Option.getOpt (SST.lookup sst bidx, C.zero))
+        | HS.Dense ds => DS.lookupDirect ds
+        | HS.DenseKnownNonZeroSize (ds, _) => DS.lookupDirect ds
 
       fun doGates (bidx, gatenum) =
         if gatenum < 0 then
@@ -375,7 +365,7 @@ struct
         DS.pull {numQubits = numQubits} (fn bidx =>
           doGates (bidx, numGates - 1))
     in
-      { result = DenseKnownNonZeroSize (result, nonZeroSize)
+      { result = HS.DenseKnownNonZeroSize (result, nonZeroSize)
       , numGateApps = totalCount
       }
     end
@@ -385,9 +375,9 @@ struct
     let
       val nonZeroSize =
         case state of
-          Sparse sst => SST.nonZeroSize sst
-        | Dense ds => DS.nonZeroSize ds
-        | DenseKnownNonZeroSize (_, nz) => nz
+          HS.Sparse sst => SST.nonZeroSize sst
+        | HS.Dense ds => DS.nonZeroSize ds
+        | HS.DenseKnownNonZeroSize (_, nz) => nz
 
       val rate = Real.max
         (1.0, Real.fromInt nonZeroSize / Real.fromInt prevNonZeroSize)
@@ -407,7 +397,7 @@ struct
 
       val (method, {result, numGateApps}) =
         if
-          expectedCost < riMult denseThreshold maxNumStates
+          denseThreshold >= 1.0 orelse expectedCost < riMult denseThreshold maxNumStates
         then
           ("push sparse", expandSparse args)
 

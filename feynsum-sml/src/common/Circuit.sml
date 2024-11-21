@@ -3,7 +3,7 @@ sig
   type circuit = {numQubits: int, gates: GateDefn.t Seq.t}
   type t = circuit
 
-  val toString: circuit -> string
+  (*val toString: circuit -> string*)
 
   val numGates: circuit -> int
   val numQubits: circuit -> int
@@ -212,104 +212,6 @@ struct
         end
     in
       {numQubits = numQubits, gates = Seq.map convertGate gates}
-    end
-
-
-  fun toString {numQubits, gates} =
-    let
-      val header = "qreg q[" ^ Int.toString numQubits ^ "];\n"
-
-      fun qi i =
-        "q[" ^ Int.toString i ^ "]"
-
-      fun doOther {name, params, args} =
-        let
-          val pstr =
-            if Seq.length params = 0 then
-              "()"
-            else
-              "("
-              ^
-              Seq.iterate (fn (acc, e) => acc ^ ", " ^ Real.toString e)
-                (Real.toString (Seq.nth params 0)) (Seq.drop params 1) ^ ")"
-
-          val front = name ^ pstr
-
-          val args =
-            if Seq.length args = 0 then
-              ""
-            else
-              Seq.iterate (fn (acc, i) => acc ^ ", " ^ qi i)
-                (qi (Seq.nth args 0)) (Seq.drop args 1)
-        in
-          front ^ " " ^ args
-        end
-
-      fun gateToString gate =
-        case gate of
-          GateDefn.PauliY i => "y " ^ qi i
-        | GateDefn.PauliZ i => "z " ^ qi i
-        | GateDefn.Hadamard i => "h " ^ qi i
-        | GateDefn.T i => "t " ^ qi i
-        | GateDefn.Tdg i => "tdg " ^ qi i
-        | GateDefn.SqrtX i => "sx " ^ qi i
-        | GateDefn.Sxdg i => "sxdg " ^ qi i
-        | GateDefn.S i => "s " ^ qi i
-        | GateDefn.Sdg i => "sdg " ^ qi i
-        | GateDefn.X i => "x " ^ qi i
-        | GateDefn.CX {control, target} => "cx " ^ qi control ^ ", " ^ qi target
-        | GateDefn.CZ {control, target} => "cz " ^ qi control ^ ", " ^ qi target
-        | GateDefn.CCX {control1, control2, target} =>
-            "ccx " ^ qi control1 ^ ", " ^ qi control2 ^ ", " ^ qi target
-        | GateDefn.Phase {target, rot} =>
-            "phase(" ^ Real.toString rot ^ ") " ^ qi target
-        | GateDefn.CPhase {control, target, rot} =>
-            "cphase(" ^ Real.toString rot ^ ") " ^ qi control ^ ", " ^ qi target
-        | GateDefn.FSim {left, right, theta, phi} =>
-            "fsim(" ^ Real.toString theta ^ ", " ^ Real.toString phi ^ ") "
-            ^ qi left ^ ", " ^ qi right
-        | GateDefn.RZ {rot, target} =>
-            "rz(" ^ Real.toString rot ^ ") " ^ qi target
-        | GateDefn.RY {rot, target} =>
-            "ry(" ^ Real.toString rot ^ ") " ^ qi target
-        | GateDefn.RX {rot, target} =>
-            "rx(" ^ Real.toString rot ^ ") " ^ qi target
-        | GateDefn.CSwap {control, target1, target2} =>
-            "cswap " ^ qi control ^ ", " ^ qi target1 ^ ", " ^ qi target2
-        | GateDefn.Swap {target1, target2} =>
-            "swap " ^ qi target1 ^ ", " ^ qi target2
-
-        | GateDefn.U {target, theta, phi, lambda} =>
-            doOther
-              { name = "u"
-              , params = Seq.fromList [theta, phi, lambda]
-              , args = Seq.singleton target
-              }
-
-        | GateDefn.Other {name, params, args} =>
-            let
-              val pstr =
-                if Seq.length params = 0 then
-                  "()"
-                else
-                  "("
-                  ^
-                  Seq.iterate (fn (acc, e) => acc ^ ", " ^ Real.toString e)
-                    (Real.toString (Seq.nth params 0)) (Seq.drop params 1) ^ ")"
-
-              val front = name ^ pstr
-
-              val args =
-                if Seq.length args = 0 then
-                  ""
-                else
-                  Seq.iterate (fn (acc, i) => acc ^ ", " ^ qi i)
-                    (qi (Seq.nth args 0)) (Seq.drop args 1)
-            in
-              front ^ " " ^ args
-            end
-    in
-      Seq.iterate op^ header (Seq.map (fn g => gateToString g ^ ";\n") gates)
     end
 
 end

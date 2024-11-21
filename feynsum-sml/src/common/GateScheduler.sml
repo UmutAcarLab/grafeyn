@@ -1,16 +1,10 @@
 structure GateScheduler =
 struct
 
-  type qubit_idx = int
   type gate_idx = int
 
-  type args =
-    { numQubits: int
-    , numGates: int
-    , gateTouches: gate_idx -> qubit_idx Seq.t
-    , gateIsBranching: gate_idx -> bool
-    }
-
-  type t = args -> (unit -> gate_idx Seq.t)
-
+  (* From a frontier, select which gate to apply next *)
+  (*       args    visit gates, update frontier    break fusion      initial frontier  gate batches *)
+  (*type t = args -> (gate_idx -> gate_idx Seq.t) -> (unit -> unit) -> gate_idx Seq.t -> gate_idx Seq.t Seq.t*)
+  type t = DataFlowGraph.t -> (gate_idx Seq.t -> gate_idx)
 end

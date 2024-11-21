@@ -29,63 +29,6 @@ val _ = print ("scheduler " ^ schedulerName ^ "\n")
 val inputName = CLA.parseString "input" ""
 val _ = print ("input " ^ inputName ^ "\n")
 
-(* ========================================================================
- * gate scheduling
- *)
-
-
-local
-  val disableFusion = CLA.parseFlag "scheduler-disable-fusion"
-  val maxBranchingStride = CLA.parseInt "scheduler-max-branching-stride" 2
-in
-  structure GNB =
-    GateSchedulerGreedyNonBranching
-      (val maxBranchingStride = maxBranchingStride
-       val disableFusion = disableFusion)
-
-  structure GFQ =
-    GateSchedulerGreedyFinishQubit
-      (val maxBranchingStride = maxBranchingStride
-       val disableFusion = disableFusion)
-
-  fun print_sched_info () =
-    let
-      val _ = print
-        ("-------------------------------------\n\
-         \--- scheduler-specific args\n\
-         \-------------------------------------\n")
-      val _ = print
-        ("scheduler-max-branching-stride " ^ Int.toString maxBranchingStride
-         ^ "\n")
-      val _ = print
-        ("scheduler-disable-fusion? " ^ (if disableFusion then "yes" else "no")
-         ^ "\n")
-      val _ = print ("-------------------------------------\n")
-    in
-      ()
-    end
-end
-
-
-val gateScheduler =
-  case schedulerName of
-    "naive" => GateSchedulerNaive.scheduler
-
-  | "greedy-branching" => GateSchedulerGreedyBranching.scheduler
-  | "gb" => GateSchedulerGreedyBranching.scheduler
-
-  | "greedy-nonbranching" => (print_sched_info (); GNB.scheduler)
-  | "gnb" => (print_sched_info (); GNB.scheduler)
-
-  | "greedy-finish-qubit" => (print_sched_info (); GFQ.scheduler)
-  | "gfq" => (print_sched_info (); GFQ.scheduler)
-
-  | _ =>
-      Util.die
-        ("unknown scheduler: " ^ schedulerName
-         ^
-         "; valid options are: naive, greedy-branching (gb), greedy-nonbranching (gnb), greedy-finish-qubit (gfq)")
-
 (* =========================================================================
  * parse input
  *)
@@ -95,37 +38,44 @@ val _ = print
    \--- input-specific specs\n\
    \-------------------------------\n")
 
-val circuit =
+fun parseQasm () =
+    let
+      fun handleLexOrParseError exn =
+        let
+          val e =
+            case exn of
+              SMLQasmError.Error e => e
+            | other => raise other
+        in
+          TerminalColorString.print
+            (SMLQasmError.show
+               {highlighter = SOME SMLQasmSyntaxHighlighter.fuzzyHighlight} e);
+          OS.Process.exit OS.Process.failure
+        end
+
+      val ast = SMLQasmParser.parseFromFile inputName
+                handle exn => handleLexOrParseError exn
+
+      val simpleCirc = SMLQasmSimpleCircuit.fromAst ast
+    in
+      DataFlowGraph.fromQasm (Circuit.fromSMLQasmSimpleCircuit simpleCirc)
+    end
+
+val dfg =
   case inputName of
     "" => Util.die ("missing: -input FILE.qasm")
-
   | _ =>
-      let
-        fun handleLexOrParseError exn =
-          let
-            val e =
-              case exn of
-                SMLQasmError.Error e => e
-              | other => raise other
-          in
-            TerminalColorString.print
-              (SMLQasmError.show
-                 {highlighter = SOME SMLQasmSyntaxHighlighter.fuzzyHighlight} e);
-            OS.Process.exit OS.Process.failure
-          end
-
-        val ast = SMLQasmParser.parseFromFile inputName
-                  handle exn => handleLexOrParseError exn
-
-        val simpleCirc = SMLQasmSimpleCircuit.fromAst ast
-      in
-        Circuit.fromSMLQasmSimpleCircuit simpleCirc
-      end
+    if String.isSuffix ".qasm" inputName then
+      parseQasm ()
+    else if String.isSuffix ".json" inputName then
+      DataFlowGraph.fromJSONFile inputName
+    else
+      raise Fail "Unknown file suffix, use .qasm or .json"
 
 val _ = print ("-------------------------------\n")
 
-val _ = print ("gates  " ^ Int.toString (Circuit.numGates circuit) ^ "\n")
-val _ = print ("qubits " ^ Int.toString (Circuit.numQubits circuit) ^ "\n")
+val _ = print ("gates  " ^ Int.toString (Seq.length (#gates dfg)) ^ "\n")
+val _ = print ("qubits " ^ Int.toString (#numQubits dfg) ^ "\n")
 
 val showCircuit = CLA.parseFlag "show-circuit"
 val _ = print ("show-circuit? " ^ (if showCircuit then "yes" else "no") ^ "\n")
@@ -135,8 +85,48 @@ val _ =
   else
     print
       ("=========================================================\n"
-       ^ Circuit.toString circuit
+       ^ DataFlowGraph.toString dfg
        ^ "=========================================================\n")
+
+(* ========================================================================
+ * gate scheduling
+ *)
+
+
+val disableFusion = CLA.parseFlag "scheduler-disable-fusion"
+val maxBranchingStride = CLA.parseInt "scheduler-max-branching-stride" 2
+
+structure DGNB =
+  GreedyNonBranchingScheduler
+    (val maxBranchingStride = maxBranchingStride
+     val disableFusion = disableFusion)
+
+structure DGFQ =
+  FinishQubitScheduler
+    (val maxBranchingStride = maxBranchingStride
+     val disableFusion = disableFusion)
+
+fun print_sched_info () =
+  let
+    val _ = print
+      ("-------------------------------------\n\
+       \--- scheduler-specific args\n\
+       \-------------------------------------\n")
+    val _ = print
+      ("scheduler-max-branching-stride " ^ Int.toString maxBranchingStride
+       ^ "\n")
+    val _ = print
+      ("scheduler-disable-fusion? " ^ (if disableFusion then "yes" else "no")
+       ^ "\n")
+    val _ = print ("-------------------------------------\n")
+  in
+    ()
+  end
+
+type gate_idx = int
+type Schedule = gate_idx Seq.t
+
+val maxBranchingStride' = if disableFusion then 1 else maxBranchingStride
 
 (* ========================================================================
  * mains: 32-bit and 64-bit
@@ -146,9 +136,11 @@ structure M_64_32 =
   MkMain
     (structure B = BasisIdx64
      structure C = Complex32
+     val maxBranchingStride = maxBranchingStride
+     val disableFusion = disableFusion
      val blockSize = blockSize
      val maxload = maxload
-     val gateScheduler = gateScheduler
+     val gateScheduler = schedulerName
      val doMeasureZeros = doMeasureZeros
      val denseThreshold = denseThreshold
      val pullThreshold = pullThreshold)
@@ -157,9 +149,11 @@ structure M_64_64 =
   MkMain
     (structure B = BasisIdx64
      structure C = Complex64
+     val maxBranchingStride = maxBranchingStride
+     val disableFusion = disableFusion
      val blockSize = blockSize
      val maxload = maxload
-     val gateScheduler = gateScheduler
+     val gateScheduler = schedulerName
      val doMeasureZeros = doMeasureZeros
      val denseThreshold = denseThreshold
      val pullThreshold = pullThreshold)
@@ -168,9 +162,11 @@ structure M_U_32 =
   MkMain
     (structure B = BasisIdxUnlimited
      structure C = Complex32
+     val maxBranchingStride = maxBranchingStride
+     val disableFusion = disableFusion
      val blockSize = blockSize
      val maxload = maxload
-     val gateScheduler = gateScheduler
+     val gateScheduler = schedulerName
      val doMeasureZeros = doMeasureZeros
      val denseThreshold = denseThreshold
      val pullThreshold = pullThreshold)
@@ -179,14 +175,16 @@ structure M_U_64 =
   MkMain
     (structure B = BasisIdxUnlimited
      structure C = Complex64
+     val maxBranchingStride = maxBranchingStride
+     val disableFusion = disableFusion
      val blockSize = blockSize
      val maxload = maxload
-     val gateScheduler = gateScheduler
+     val gateScheduler = schedulerName
      val doMeasureZeros = doMeasureZeros
      val denseThreshold = denseThreshold
      val pullThreshold = pullThreshold)
 
-val basisIdx64Okay = Circuit.numQubits circuit <= 62
+val basisIdx64Okay = #numQubits dfg <= 62
 
 val main =
   case precision of
@@ -199,4 +197,4 @@ val main =
 
 (* ======================================================================== *)
 
-val _ = main (inputName, circuit)
+val _ = main (inputName, dfg)

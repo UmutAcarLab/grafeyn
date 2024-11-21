@@ -1,37 +1,35 @@
 functor FullSimBFS
   (structure B: BASIS_IDX
    structure C: COMPLEX
-   structure SST: SPARSE_STATE_TABLE
+   structure HS: HYBRID_STATE
    structure G: GATE
-   sharing B = SST.B = G.B
-   sharing C = SST.C = G.C
+   sharing B = HS.B = G.B
+   sharing C = HS.C = G.C
 
+   val disableFusion: bool
+   val maxBranchingStride: int
+   val gateScheduler: string
    val blockSize: int
    val maxload: real
-   val gateScheduler: GateScheduler.t
    val doMeasureZeros: bool
    val denseThreshold: real
    val pullThreshold: real):
 sig
-  val run: Circuit.t
+  val run: DataFlowGraph.t
            -> {result: (B.t * C.t) option DelayedSeq.t, counts: int Seq.t}
 end =
 struct
-
-  structure DS = DenseState (structure C = C structure B = B)
 
   structure Expander =
     ExpandState
       (structure B = B
        structure C = C
-       structure SST = SST
-       structure DS = DS
+       structure HS = HS
        structure G = G
        val denseThreshold = denseThreshold
        val blockSize = blockSize
        val maxload = maxload
        val pullThreshold = pullThreshold)
-
 
   val bits = Seq.fromList [ (*"▏",*)"▎", "▍", "▌", "▊"]
 
@@ -61,9 +59,9 @@ struct
     let
       val ss =
         case s of
-          Expander.Sparse sst => SST.unsafeViewContents sst
-        | Expander.Dense ds => DS.unsafeViewContents ds
-        | Expander.DenseKnownNonZeroSize (ds, _) => DS.unsafeViewContents ds
+          HS.Sparse sst => HS.SST.unsafeViewContents sst
+        | HS.Dense ds => HS.DS.unsafeViewContents ds
+        | HS.DenseKnownNonZeroSize (ds, _) => HS.DS.unsafeViewContents ds
     in
       Util.for (0, DelayedSeq.length ss) (fn i =>
         case DelayedSeq.nth ss i of
@@ -76,22 +74,45 @@ struct
             end)
     end
 
+  structure DGFQ = DynSchedFinishQubitWrapper
+                     (structure B = B
+                      structure C = C
+                      structure HS = HS
+                      val maxBranchingStride = maxBranchingStride
+                      val disableFusion = disableFusion)
 
-  fun run {numQubits, gates} =
+  structure DGI = DynSchedInterference
+                    (structure B = B
+                     structure C = C
+                     structure HS = HS
+                     val maxBranchingStride = maxBranchingStride
+                     val disableFusion = disableFusion)
+  structure DGN = DynSchedNaive
+                    (structure B = B
+                     structure C = C
+                     structure HS = HS
+                     val maxBranchingStride = maxBranchingStride
+                     val disableFusion = disableFusion)
+
+  val gateSched =
+      case gateScheduler of
+          "naive" => DGN.choose
+        | "gfq" => DGFQ.choose
+        | "interference" => DGI.choose
+        | _ => raise Fail ("Unknown scheduler '" ^ gateScheduler ^ "'\n")
+
+  fun run dfg (*{numQubits, gates}*) =
     let
-      val gates = Seq.map G.fromGateDefn gates
+      val gates = Seq.map G.fromGateDefn (#gates dfg)
+      val numQubits = #numQubits dfg
       fun gate i = Seq.nth gates i
       val depth = Seq.length gates
+      val dgstate = DataFlowGraphUtil.initState dfg
 
-      val gateSchedulerPickNextGates = gateScheduler
-        { numQubits = numQubits
-        , numGates = depth
-        , gateTouches = #touches o gate
-        , gateIsBranching = (fn i =>
-            case #action (gate i) of
-              G.NonBranching _ => false
-            | _ => true)
-        }
+      val pickNextGate =
+          let val f = gateSched dfg in
+            fn (s, g) => f (s, g)
+          end
 
       (* val _ =
         if numQubits > 63 then raise Fail "whoops, too many qubits" else () *)
@@ -134,77 +155,74 @@ struct
           density
         end
 
+      fun getNumZeros state =
+          case state of
+              HS.Sparse sst => HS.SST.zeroSize sst
+            | HS.Dense ds => 0 (*raise Fail "Can't do dense stuff!"*)
+              (*DS.unsafeViewContents ds, DS.nonZeroSize ds, TODO exception*)
+            | HS.DenseKnownNonZeroSize (ds, nz) => 0 (*raise Fail "Can't do dense stuff!"*)
+              (*DS.unsafeViewContents ds, nz, TODO exception*)
 
-      fun loop numGateApps gatesVisitedSoFar counts prevNonZeroSize state =
-        if gatesVisitedSoFar >= depth then
-          let
-            val (nonZeros, numNonZeros) =
-              case state of
-                Expander.Sparse sst =>
-                  (SST.unsafeViewContents sst, SST.nonZeroSize sst)
-              | Expander.Dense ds =>
-                  (DS.unsafeViewContents ds, DS.nonZeroSize ds)
-              | Expander.DenseKnownNonZeroSize (ds, nz) =>
-                  (DS.unsafeViewContents ds, nz)
+      val initialState = HS.Sparse
+        (HS.SST.singleton {numQubits = numQubits} (B.zeros, C.defaultReal 1.0))
 
-            (* val _ = dumpState numQubits state *)
+      fun runloop () =
+          DataFlowGraphUtil.scheduleWithOracle'
 
-            val density =
-              dumpDensity (gatesVisitedSoFar, numNonZeros, NONE, NONE)
-          in
-            print "\n";
-            (numGateApps, nonZeros, Seq.fromRevList (numNonZeros :: counts))
-          end
+            (* data flow graph *)
+            dfg
 
-        else
-          let
-            (* val _ = dumpState numQubits state *)
+            (* gate is branching *)
+            (fn i => G.expectBranching (Seq.nth gates i))
 
-            val theseGates = gateSchedulerPickNextGates ()
-            val _ =
-              if Seq.length theseGates > 0 then
-                ()
-              else
-                raise Fail "FullSimBFS: gate scheduler returned empty sequence"
+            (* select gate *)
+            (fn ((state, numGateApps, counts, gatesVisitedSoFar), gates) => pickNextGate (state, gates))
 
-            (* val _ = print
-              ("visiting: " ^ Seq.toString Int.toString theseGates ^ "\n") *)
+            (* disable fusion? *)
+            disableFusion
 
-            val theseGates = Seq.map (Seq.nth gates) theseGates
-            val numGatesVisitedHere = Seq.length theseGates
-            val ({result, method, numNonZeros, numGateApps = apps}, tm) =
-              Util.getTime (fn () =>
-                Expander.expand
-                  { gates = theseGates
-                  , numQubits = numQubits
-                  , maxNumStates = maxNumStates
-                  , state = state
-                  , prevNonZeroSize = prevNonZeroSize
-                  })
+            (* if fusion enabled, what's the max # of branching gates to fuse? *)
+            maxBranchingStride
 
-            val seconds = Time.toReal tm
-            val millions = Real.fromInt apps / 1e6
-            val throughput = millions / seconds
-            val throughputStr = Real.fmt (StringCvt.FIX (SOME 2)) throughput
-            val density =
-              dumpDensity (gatesVisitedSoFar, numNonZeros, NONE, NONE)
-            val _ = print
-              (" hop " ^ leftPad 3 (Int.toString numGatesVisitedHere) ^ " "
-               ^ rightPad 11 method ^ " "
-               ^ Real.fmt (StringCvt.FIX (SOME 4)) seconds ^ "s throughput "
-               ^ throughputStr ^ "\n")
-          in
-            loop (numGateApps + apps) (gatesVisitedSoFar + numGatesVisitedHere)
-              (numNonZeros :: counts) numNonZeros result
-          end
+            (* apply gate fusion seq, updating state *)
+            (fn ((state, numGateApps, counts, gatesVisitedSoFar), theseGates) =>
+                let val numGatesVisitedHere = Seq.length theseGates
+                    val ({result, method, numNonZeros, numGateApps = apps}, tm) =
+                        Util.getTime (fn () =>
+                                         Expander.expand
+                                           { gates = Seq.map (Seq.nth gates) theseGates
+                                           , numQubits = numQubits
+                                           , maxNumStates = maxNumStates
+                                           , state = state
+                                           , prevNonZeroSize = (case counts of h :: t => h | nil => 1)
+                                     })
+                                     
+                    val seconds = Time.toReal tm
+                    val millions = Real.fromInt apps / 1e6
+                    val throughput = millions / seconds
+                    val throughputStr = Real.fmt (StringCvt.FIX (SOME 2)) throughput
+                    val density =
+                        dumpDensity (gatesVisitedSoFar, numNonZeros, SOME (getNumZeros state), NONE)
+                    val _ = print
+                              (" hop " ^ leftPad 3 (Int.toString numGatesVisitedHere) ^ " "
+                               ^ rightPad 11 method ^ " "
+                               ^ Real.fmt (StringCvt.FIX (SOME 4)) seconds ^ "s throughput "
+                               ^ throughputStr ^ "\n")
+                in
+                  (result, numGateApps + apps, numNonZeros :: counts, gatesVisitedSoFar + numGatesVisitedHere)
+                end
+            )
 
+            (* initial state *)
+            (initialState, 0, [], 0)
 
-      val initialState = Expander.Sparse
-        (SST.singleton {numQubits = numQubits} (B.zeros, C.defaultReal 1.0))
-
-      val (numGateApps, finalState, counts) = loop 0 0 [] 1 initialState
+      val (finalState, numGateApps, counts, gatesVisited) = runloop ()
+      val nonZeros = case finalState of
+                       HS.Sparse sst => HS.SST.unsafeViewContents sst
+                     | HS.Dense ds => HS.DS.unsafeViewContents ds
+                     | HS.DenseKnownNonZeroSize (ds, nz) => HS.DS.unsafeViewContents ds
       val _ = print ("gate app count " ^ Int.toString numGateApps ^ "\n")
     in
-      {result = finalState, counts = counts}
+      {result = nonZeros, counts = Seq.fromList counts}
     end
 end

@@ -20,23 +20,26 @@ local
     structure SMLQasmParser = Parser
   end
 
+  $(SML_LIB)/smlnj-lib/JSON/json-lib.mlb
+  $(SML_LIB)/smlnj-lib/Util/smlnj-lib.mlb
+
   HashTable.sml
-  ApplyUntilFailure.sml
+  HashSet.sml
 
   Rat.sml
 
   QubitIdx.sml
 
   Constants.sml
-  MkComplex.sml
-  Complex32.sml
-  Complex64.sml
-  Complex.sml
+  complex/MkComplex.sml
+  complex/Complex32.sml
+  complex/Complex64.sml
+  complex/Complex.sml
 
-  BASIS_IDX.sml
+  basis/BASIS_IDX.sml
   ann "allowExtendedTextConsts true" in
-    BasisIdx64.sml
-    BasisIdxUnlimited.sml
+    basis/BasisIdx64.sml
+    basis/BasisIdxUnlimited.sml
   end
   
   ann "allowExtendedTextConsts true" in
@@ -45,25 +48,30 @@ local
     Circuit.sml
   end
 
-  SPARSE_STATE_TABLE.sml
-  SparseStateTable.sml
-  SparseStateTableLockedSlots.sml
+  state/SPARSE_STATE_TABLE.sml
+  state/SparseStateTable.sml
+  state/SparseStateTableLockedSlots.sml
 
-  DENSE_STATE.sml
-  DenseState.sml
+  state/DENSE_STATE.sml
+  state/DenseState.sml
+
+  state/HYBRID_STATE.sml
+  state/HybridState.sml
   
-  ExpandState.sml
-
-  GateScheduler.sml
-  GateSchedulerNaive.sml
-  GateSchedulerGreedyNonBranching.sml
-  GateSchedulerGreedyBranching.sml
-  GateSchedulerGreedyFinishQubit.sml
+  state/ExpandState.sml
 
   Fingerprint.sml
+
+  DataFlowGraph.sml
+  DataFlowGraphUtil.sml
+  GateScheduler.sml
+  schedulers/GreedyBranching.sml
+  schedulers/GreedyNonBranching.sml
+  schedulers/FinishQubit.sml
+  DynGateScheduler.sml
 in
   structure HashTable
-  structure ApplyUntilFailure
+  structure HashSet
 
   structure Rat
 
@@ -103,17 +111,26 @@ in
 
   signature DENSE_STATE
   functor DenseState
+  
+  signature HYBRID_STATE
+  functor HybridState
 
   functor ExpandState
-
-  structure GateScheduler
-  structure GateSchedulerNaive
-  functor GateSchedulerGreedyNonBranching
-  structure GateSchedulerGreedyBranching
-  functor GateSchedulerGreedyFinishQubit
 
   functor RedBlackMapFn
   functor RedBlackSetFn
 
   functor Fingerprint
+
+  structure DataFlowGraph
+  structure DataFlowGraphUtil
+  structure GateScheduler
+  structure GreedyBranchingScheduler
+  functor GreedyNonBranchingScheduler
+  functor FinishQubitScheduler
+  (*structure GateSchedulerOrder*)
+  signature DYN_GATE_SCHEDULER
+  functor DynSchedFinishQubitWrapper
+  functor DynSchedInterference
+  functor DynSchedNaive
 end
